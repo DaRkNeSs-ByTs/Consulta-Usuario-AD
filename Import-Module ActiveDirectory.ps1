@@ -1,0 +1,230 @@
+Import-Module ActiveDirectory
+
+$desktopPath = [Environment]::GetFolderPath("Desktop")
+$outputFileUsuarios = "$desktopPath\UsuariosInativos_AD.txt"
+$outputFileComputadores = "$desktopPath\ComputadoresInativos_TodasMaquinas.txt"
+
+$dataAtual = Get-Date  # Inclui data e hora atuais
+$nomeMaquinaAtual = $env:COMPUTERNAME
+$dataAtualInicio = $dataAtual.Date  # InÃ­cio do dia atual (00:00:00)
+
+$dataLimiteInput = Read-Host "Digite a data limite para busca (dd/MM/yyyy)"
+while ($true) {
+    try {
+        $dataLimite = [datetime]::ParseExact($dataLimiteInput, "dd/MM/yyyy", $null)
+        if ($dataLimite -gt $dataAtual) {
+            Write-Host "A data nÃ£o pode ser futura. Digite uma data vÃ¡lida." -ForegroundColor Red
+            $dataLimiteInput = Read-Host "Digite a data limite para busca (dd/MM/yyyy)"
+        } else {
+            break
+        }
+    } catch {
+        Write-Host "Data invÃ¡lida. Digite no formato dd/MM/yyyy (ex.: 01/03/2025)." -ForegroundColor Red
+        $dataLimiteInput = Read-Host "Digite a data limite para busca (dd/MM/yyyy)"
+    }
+}
+
+$dataLimiteFormatada = $dataLimite.ToString('dd/MM/yyyy')
+$dataAtualFormatada = $dataAtual.ToString('dd/MM/yyyy')
+
+$usuariosInativos = Get-ADUser -Filter {Enabled -eq $true} -Properties LastLogonDate, Name, SamAccountName |
+    Where-Object { $_.LastLogonDate -ne $null -and $_.LastLogonDate.Date -lt $dataLimite } |
+    Select-Object Name, SamAccountName, @{Name='LastLogonDate';Expression={$_.LastLogonDate.ToString('dd/MM/yyyy')}} |
+    Sort-Object Name
+
+if ($usuariosInativos) {
+    $conteudoUsuarios = "RelatÃ³rio de UsuÃ¡rios Inativos no AD `n"
+    $conteudoUsuarios += "Data Atual do Sistema: $dataAtualFormatada`n"
+    $conteudoUsuarios += "Data Limite da Busca: $dataLimiteFormatada`n"
+    $conteudoUsuarios += "PerÃ­odo de Busca: de $dataLimiteFormatada atÃ© $dataAtualFormatada`n"
+    $conteudoUsuarios += "MÃ¡quina que gerou o relatÃ³rio: $nomeMaquinaAtual`n"
+    $conteudoUsuarios += "Total de UsuÃ¡rios Encontrados: $($usuariosInativos.Count)`n"
+    $conteudoUsuarios += "Nota: MÃ¡quina do Ãºltimo logon nÃ£o disponÃ­vel.`n"
+    $conteudoUsuarios += "--------------------------------------------`n`n"
+    
+    foreach ($usuario in $usuariosInativos) {
+        $conteudoUsuarios += "Nome: $($usuario.Name)`n"
+        $conteudoUsuarios += "Login: $($usuario.SamAccountName)`n"
+        $conteudoUsuarios += "Ãšltimo Login (LastLogonDate): $($usuario.LastLogonDate)`n"
+        $conteudoUsuarios += "MÃ¡quina do Ãšltimo Logon: NÃ£o disponÃ­vel`n"
+        $conteudoUsuarios += "--------------------------------------------`n"
+    }
+    
+    $conteudoUsuarios | Out-File -FilePath $outputFileUsuarios -Encoding UTF8
+    Write-Host "RelatÃ³rio de usuÃ¡rios gerado com sucesso!" -ForegroundColor Green
+} else {
+    "Nenhum usuÃ¡rio inativo encontrado no perÃ­odo (de $dataLimiteFormatada atÃ© $dataAtualFormatada)" | Out-File -FilePath $outputFileUsuarios -Encoding UTF8
+    Write-Host "Nenhum usuÃ¡rio inativo encontrado" -ForegroundColor Yellow
+}
+
+$caracterBusca = Read-Host "Digite o nome da mÃ¡quina para buscar ou deixe em branco para listar todas as mÃ¡quinas"
+
+if ([string]::IsNullOrWhiteSpace($caracterBusca)) {
+    # MÃ¡quinas Inativas: NÃ£o logaram entre a data limite e a data atual
+    $resultadosInativos = Get-ADComputer -Filter * -Property Name, LastLogonDate, OperatingSystem, DistinguishedName | 
+        Where-Object { ($_.LastLogonDate -eq $null) -or ($_.LastLogonDate -lt $dataLimite) } | 
+        Sort-Object Name | 
+        Select-Object Name, OperatingSystem, DistinguishedName, @{Name='LastLogonDate';Expression={if ($_.LastLogonDate) {$_.LastLogonDate.ToString('dd/MM/yyyy HH:mm')} else {"Nunca"}}}
+    
+    # MÃ¡quinas Ativas: Logaram entre a data limite e a data atual
+    $resultadosAtivos = Get-ADComputer -Filter * -Property Name, LastLogonDate, OperatingSystem, DistinguishedName | 
+        Where-Object { $_.LastLogonDate -ge $dataLimite -and $_.LastLogonDate -le $dataAtual } | 
+        Sort-Object Name | 
+        Select-Object Name, OperatingSystem, DistinguishedName, @{Name='LastLogonDate';Expression={if ($_.LastLogonDate) {$_.LastLogonDate.ToString('dd/MM/yyyy HH:mm')} else {"Nunca"}}}
+    
+    # MÃ¡quinas Logadas Hoje: Logaram apenas no dia atual (sem filtro de nome)
+    $resultadosHoje = Get-ADComputer -Filter * -Property Name, LastLogonDate, OperatingSystem, DistinguishedName | 
+        Where-Object { $_.LastLogonDate -ge $dataAtualInicio -and $_.LastLogonDate -le $dataAtual } | 
+        Sort-Object Name | 
+        Select-Object Name, OperatingSystem, DistinguishedName, @{Name='LastLogonDate';Expression={if ($_.LastLogonDate) {$_.LastLogonDate.ToString('dd/MM/yyyy HH:mm')} else {"Nunca"}}}
+    
+    $tituloInativos = "RelatÃ³rio de Todas as MÃ¡quinas Inativas (Sem Logon de $dataLimiteFormatada atÃ© $dataAtualFormatada)"
+    $tituloAtivos = "RelatÃ³rio de Todas as MÃ¡quinas Ativas (Logon entre $dataLimiteFormatada e $dataAtualFormatada)"
+    $tituloHoje = "RelatÃ³rio de Todas as MÃ¡quinas Logadas Hoje ($dataAtualFormatada)"
+} else {
+    # MÃ¡quinas Inativas: NÃ£o logaram entre a data limite e a data atual, com filtro de nome
+    $resultadosInativos = Get-ADComputer -Filter "Name -like '*$caracterBusca*'" -Property Name, LastLogonDate, OperatingSystem, DistinguishedName | 
+        Where-Object { ($_.LastLogonDate -eq $null) -or ($_.LastLogonDate -lt $dataLimite) } | 
+        Sort-Object Name | 
+        Select-Object Name, OperatingSystem, DistinguishedName, @{Name='LastLogonDate';Expression={if ($_.LastLogonDate) {$_.LastLogonDate.ToString('dd/MM/yyyy HH:mm')} else {"Nunca"}}}
+    
+    # MÃ¡quinas Ativas: Logaram entre a data limite e a data atual, com filtro de nome
+    $resultadosAtivos = Get-ADComputer -Filter "Name -like '*$caracterBusca*'" -Property Name, LastLogonDate, OperatingSystem, DistinguishedName | 
+        Where-Object { $_.LastLogonDate -ge $dataLimite -and $_.LastLogonDate -le $dataAtual } | 
+        Sort-Object Name | 
+        Select-Object Name, OperatingSystem, DistinguishedName, @{Name='LastLogonDate';Expression={if ($_.LastLogonDate) {$_.LastLogonDate.ToString('dd/MM/yyyy HH:mm')} else {"Nunca"}}}
+    
+    # MÃ¡quinas Logadas Hoje: Logaram apenas no dia atual, com filtro de nome
+    $resultadosHoje = Get-ADComputer -Filter "Name -like '*$caracterBusca*'" -Property Name, LastLogonDate, OperatingSystem, DistinguishedName | 
+        Where-Object { $_.LastLogonDate -ge $dataAtualInicio -and $_.LastLogonDate -le $dataAtual } | 
+        Sort-Object Name | 
+        Select-Object Name, OperatingSystem, DistinguishedName, @{Name='LastLogonDate';Expression={if ($_.LastLogonDate) {$_.LastLogonDate.ToString('dd/MM/yyyy HH:mm')} else {"Nunca"}}}
+    
+    $tituloInativos = "RelatÃ³rio de MÃ¡quinas Inativas com '$caracterBusca' no Nome (Sem Logon de $dataLimiteFormatada atÃ© $dataAtualFormatada)"
+    $tituloAtivos = "RelatÃ³rio de MÃ¡quinas Ativas com '$caracterBusca' no Nome (Logon entre $dataLimiteFormatada e $dataAtualFormatada)"
+    $tituloHoje = "RelatÃ³rio de MÃ¡quinas Logadas Hoje com '$caracterBusca' no Nome ($dataAtualFormatada)"
+}
+
+$conteudoComputadores = "RelatÃ³rio de Computadores no AD `n"
+$conteudoComputadores += "Data Atual do Sistema: $dataAtualFormatada`n"
+$conteudoComputadores += "Data Limite da Busca: $dataLimiteFormatada`n"
+$conteudoComputadores += "PerÃ­odo de Busca: de $dataLimiteFormatada atÃ© $dataAtualFormatada`n"
+$conteudoComputadores += "MÃ¡quina que gerou o relatÃ³rio: $nomeMaquinaAtual`n"
+$conteudoComputadores += "--------------------------------------------`n`n"
+
+$conteudoComputadores += "$tituloInativos `n"
+$conteudoComputadores += "Total de Computadores Inativos Encontrados: $($resultadosInativos.Count)`n"
+$conteudoComputadores += "--------------------------------------------`n"
+if ($resultadosInativos) {
+    foreach ($computador in $resultadosInativos) {
+        $conteudoComputadores += "Nome: $($computador.Name)`n"
+        $conteudoComputadores += "Sistema Operacional: $($computador.OperatingSystem)`n"
+        $conteudoComputadores += "Ãšltimo Login: $($computador.LastLogonDate)`n"
+        $conteudoComputadores += "DistinguishedName: $($computador.DistinguishedName)`n"
+        $conteudoComputadores += "--------------------------------------------`n"
+    }
+} else {
+    $conteudoComputadores += "Nenhum computador inativo encontrado.`n"
+    $conteudoComputadores += "--------------------------------------------`n"
+}
+
+$conteudoComputadores += "`n$tituloAtivos `n"
+$conteudoComputadores += "Total de Computadores Ativos Encontrados: $($resultadosAtivos.Count)`n"
+$conteudoComputadores += "--------------------------------------------`n"
+if ($resultadosAtivos) {
+    foreach ($computador in $resultadosAtivos) {
+        $conteudoComputadores += "Nome: $($computador.Name)`n"
+        $conteudoComputadores += "Sistema Operacional: $($computador.OperatingSystem)`n"
+        $conteudoComputadores += "Ãšltimo Login: $($computador.LastLogonDate)`n"
+        $conteudoComputadores += "DistinguishedName: $($computador.DistinguishedName)`n"
+        $conteudoComputadores += "--------------------------------------------`n"
+    }
+} else {
+    $conteudoComputadores += "Nenhum computador ativo encontrado.`n"
+    $conteudoComputadores += "--------------------------------------------`n"
+}
+
+$conteudoComputadores += "`n$tituloHoje `n"
+$conteudoComputadores += "Total de Computadores Logados Hoje Encontrados: $($resultadosHoje.Count)`n"
+$conteudoComputadores += "--------------------------------------------`n"
+if ($resultadosHoje) {
+    foreach ($computador in $resultadosHoje) {
+        $conteudoComputadores += "Nome: $($computador.Name)`n"
+        $conteudoComputadores += "Sistema Operacional: $($computador.OperatingSystem)`n"
+        $conteudoComputadores += "Ãšltimo Login: $($computador.LastLogonDate)`n"
+        $conteudoComputadores += "DistinguishedName: $($computador.DistinguishedName)`n"
+        $conteudoComputadores += "--------------------------------------------`n"
+    }
+} else {
+    $conteudoComputadores += "Nenhum computador logado hoje encontrado.`n"
+    $conteudoComputadores += "--------------------------------------------`n"
+}
+
+$conteudoComputadores | Out-File -FilePath $outputFileComputadores -Encoding UTF8
+Write-Host "RelatÃ³rio de computadores gerado com sucesso!" -ForegroundColor Green
+
+Write-Host "====================================================================================" -ForegroundColor Yellow
+Write-Host "`n============================== MÃQUINAS INATIVAS ====================================" -ForegroundColor Yellow
+Write-Host "$tituloInativos" -ForegroundColor Yellow
+Write-Host "Data Atual do Sistema: $dataAtualFormatada"
+Write-Host "Data Limite da Busca: $dataLimiteFormatada"
+Write-Host "PerÃ­odo de Busca: de $dataLimiteFormatada atÃ© $dataAtualFormatada"
+if ($resultadosInativos) {
+    Write-Host "Total de Computadores Inativos Encontrados: $($resultadosInativos.Count)" -ForegroundColor Yellow
+    Write-Host "MÃ¡quinas Inativas:" -ForegroundColor Yellow
+    Write-Host ("{0,-20} {1,-30} {2,-20}" -f "Nome", "Sistema Operacional", "Ãšltimo Login") 
+    Write-Host ("-" * 20 + " " + "-" * 30 + " " + "-" * 20) 
+    foreach ($computador in $resultadosInativos) {
+        $nome = $computador.Name
+        $sistema = if ($computador.OperatingSystem) { $computador.OperatingSystem } else { "NÃ£o informado" }
+        $ultimoLogin = $computador.LastLogonDate
+        Write-Host ("{0,-20} {1,-30} {2,-20}" -f $nome, $sistema, $ultimoLogin)
+    }
+} else {
+    $msgNenhumInativo = "Nenhum computador inativo encontrado (de $dataLimiteFormatada atÃ© $dataAtualFormatada)" + $(if ($caracterBusca) { " com '$caracterBusca' no nome" } else { "" })
+    Write-Host $msgNenhumInativo -ForegroundColor Red
+}
+Write-Host "====================================================================================" -ForegroundColor Yellow
+
+Write-Host "`n============================== MÃQUINAS ATIVAS ====================================" -ForegroundColor Green
+Write-Host "$tituloAtivos" -ForegroundColor Green
+Write-Host "Data Atual do Sistema: $dataAtualFormatada"
+Write-Host "Data Limite da Busca: $dataLimiteFormatada"
+Write-Host "PerÃ­odo de Busca: de $dataLimiteFormatada atÃ© $dataAtualFormatada"
+if ($resultadosAtivos) {
+    Write-Host "Total de Computadores Ativos Encontrados: $($resultadosAtivos.Count)" -ForegroundColor Green
+    Write-Host "MÃ¡quinas Ativas:" -ForegroundColor Green
+    Write-Host ("{0,-20} {1,-30} {2,-20}" -f "Nome", "Sistema Operacional", "Ãšltimo Login") 
+    Write-Host ("-" * 20 + " " + "-" * 30 + " " + "-" * 20) 
+    foreach ($computador in $resultadosAtivos) {
+        $nome = $computador.Name
+        $sistema = if ($computador.OperatingSystem) { $computador.OperatingSystem } else { "NÃ£o informado" }
+        $ultimoLogin = $computador.LastLogonDate
+        Write-Host ("{0,-20} {1,-30} {2,-20}" -f $nome, $sistema, $ultimoLogin)
+    }
+} else {
+    $msgNenhumAtivo = "Nenhum computador ativo encontrado (de $dataLimiteFormatada atÃ© $dataAtualFormatada)" + $(if ($caracterBusca) { " com '$caracterBusca' no nome" } else { "" })
+    Write-Host $msgNenhumAtivo -ForegroundColor Red
+}
+Write-Host "====================================================================================" -ForegroundColor Green
+
+Write-Host "`n============================== MÃQUINAS LOGADAS HOJE ====================================" -ForegroundColor Cyan
+Write-Host "$tituloHoje" -ForegroundColor Cyan
+Write-Host "Data Atual do Sistema: $dataAtualFormatada"
+Write-Host "Busca de Logons Hoje: $dataAtualFormatada"
+if ($resultadosHoje) {
+    Write-Host "Total de Computadores Logados Hoje Encontrados: $($resultadosHoje.Count)" -ForegroundColor Cyan
+    Write-Host "MÃ¡quinas Logadas Hoje:" -ForegroundColor Cyan
+    Write-Host ("{0,-20} {1,-30} {2,-20}" -f "Nome", "Sistema Operacional", "Ãšltimo Login") 
+    Write-Host ("-" * 20 + " " + "-" * 30 + " " + "-" * 20) 
+    foreach ($computador in $resultadosHoje) {
+        $nome = $computador.Name
+        $sistema = if ($computador.OperatingSystem) { $computador.OperatingSystem } else { "NÃ£o informado" }
+        $ultimoLogin = $computador.LastLogonDate
+        Write-Host ("{0,-20} {1,-30} {2,-20}" -f $nome, $sistema, $ultimoLogin)
+    }
+} else {
+    $msgNenhumHoje = "Nenhum computador logado hoje encontrado ($dataAtualFormatada)" + $(if ($caracterBusca) { " com '$caracterBusca' no nome" } else { "" })
+    Write-Host $msgNenhumHoje -ForegroundColor Red
+}
+Write-Host "====================================================================================" -ForegroundColor Cyan
